@@ -14,6 +14,7 @@ Commands:
     /stats         — Productivity statistics
 """
 
+import logging
 import os
 import re
 from datetime import datetime, timedelta
@@ -52,6 +53,8 @@ from app.core.formatters import (
     STATUS_EMOJI,
     CATEGORY_EMOJI,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -122,7 +125,6 @@ def parse_deadline(text: str) -> Tuple[Optional[str], Optional[str]]:
         "`2026-03-15 14:30` or `15/03/2026 14:30`\n"
         "or type: `tomorrow`, `today`, `next monday`, `in 3 days`"
     )
-
 
 # =============================================================================
 #  INLINE KEYBOARD BUILDERS
@@ -197,6 +199,67 @@ def _parse_priority(text: str) -> str:
 
 
 # =============================================================================
+#  MENU KEYBOARDS
+# =============================================================================
+
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Full bot menu as inline buttons — shown on /start and /help."""
+    return InlineKeyboardMarkup([
+        # ── Task creation
+        [
+            InlineKeyboardButton("➕ Add Task",        callback_data="menu_addtask"),
+            InlineKeyboardButton("🤖 Add with AI",     callback_data="menu_addtask_ai"),
+        ],
+        # ── Task browsing
+        [
+            InlineKeyboardButton("📋 My Tasks",        callback_data="menu_mytasks"),
+            InlineKeyboardButton("📊 Stats",           callback_data="menu_stats"),
+        ],
+        # ── Filters
+        [
+            InlineKeyboardButton("⏳ Pending",         callback_data="menu_filter_pending"),
+            InlineKeyboardButton("✅ Done",            callback_data="menu_filter_done"),
+            InlineKeyboardButton("🔄 In Progress",     callback_data="menu_filter_progress"),
+        ],
+        # ── Categories
+        [
+            InlineKeyboardButton("💼 Work",            callback_data="menu_filter_work"),
+            InlineKeyboardButton("📚 Study",           callback_data="menu_filter_study"),
+            InlineKeyboardButton("🏠 Personal",        callback_data="menu_filter_personal"),
+        ],
+        [
+            InlineKeyboardButton("❤️ Health",          callback_data="menu_filter_health"),
+            InlineKeyboardButton("💰 Finance",         callback_data="menu_filter_finance"),
+        ],
+        # ── Settings
+        [
+            InlineKeyboardButton("⚙️ Set Timezone",    callback_data="menu_settimezone"),
+        ],
+    ])
+
+
+def back_to_menu_keyboard() -> InlineKeyboardMarkup:
+    """Simple back button to return to main menu."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🏠 Back to Menu", callback_data="menu_main"),
+    ]])
+
+
+def task_action_with_menu_keyboard(task_id: int) -> InlineKeyboardMarkup:
+    """Task action buttons + back to menu."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Done",   callback_data=f"task_done_{task_id}"),
+            InlineKeyboardButton("✏️ Edit",   callback_data=f"task_edit_{task_id}"),
+            InlineKeyboardButton("🗑️ Delete", callback_data=f"task_del_{task_id}"),
+        ],
+        [
+            InlineKeyboardButton("🏠 Back to Menu", callback_data="menu_main"),
+        ],
+    ])
+
+
+# =============================================================================
 #  /start
 # =============================================================================
 
@@ -204,20 +267,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await db.upsert_user(user.id, user.username or "", user.full_name or user.first_name or "User")
     name = escape_md(user.first_name or "there")
+    logger.info(f"User @{user.username} (ID: {user.id}) started the bot")
     await update.message.reply_text(
         f"👋 *Welcome, {name}\\!*\n\n"
-        "I'm your *AI\\-powered Task Manager*\\. Here's what I can do:\n\n"
-        "🤖 *AI Features*\n"
-        "• Parse tasks from plain English\n"
-        "• Auto\\-categorize your tasks\n"
-        "• Predict priority levels\n"
-        "• Smart deadline reminders\n\n"
-        "📌 *Quick Start*\n"
-        "• /addtask\\_ai — _'Buy groceries tomorrow at 5 PM'_\n"
-        "• /mytasks — see all your tasks\n"
-        "• /help — full command list\n\n"
-        "Let's get productive\\! 🚀",
+        "I'm your *AI\\-powered Task Manager*\\.\n"
+        "Use the buttons below to get started\\:",
         parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=main_menu_keyboard(),
     )
 
 
@@ -226,28 +282,169 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =============================================================================
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    logger.info(f"User (ID: {user_id}) requested help")
     await update.message.reply_text(
-        "📖 *Command Reference*\n\n"
-        "🆕 *Creating Tasks*\n"
-        "/addtask — Step\\-by\\-step task wizard\n"
-        "/addtask\\_ai — Natural language AI creation\n\n"
-        "📋 *Managing Tasks*\n"
-        "/mytasks — List all tasks \\(tap a task to view it\\)\n"
-        "/mytasks pending — Filter by status\n"
-        "/mytasks work — Filter by category\n"
-        "/mytask \\<id\\> — View a single task\n"
-        "/done \\<id\\> — Mark task as completed\n"
-        "/edittask \\<id\\> — Edit a task\n"
-        "/deletetask \\<id\\> — Delete a task\n\n"
-        "📊 *Insights*\n"
-        "/stats — Your productivity statistics\n\n"
-        "⚙️ *Settings*\n"
-        "/settimezone \\<tz\\> — e\\.g\\. Asia/Tashkent\n\n"
-        "💡 *Tips*\n"
-        "• Tap any task in /mytasks for full details \\+ action buttons\n"
-        "• Every task card has Done / Edit / Delete buttons\n"
-        "• AI understands: _'Finish report by Friday urgent'_",
+        "📖 *Help \\& Menu*\n\n"
+        "Tap a button to act, or use commands directly\\:\n\n"
+        "*Creating*  ➕ Add Task \\| 🤖 Add with AI\n"
+        "*Viewing*   📋 My Tasks \\| 📊 Stats\n"
+        "*Filters*   ⏳ Pending \\| ✅ Done \\| 🔄 In Progress\n"
+        "*Category*  💼 Work \\| 📚 Study \\| 🏠 Personal \\| ❤️ Health \\| 💰 Finance\n"
+        "*Settings*  ⚙️ Set Timezone\n\n"
+        "💡 _Tip: tap any task in My Tasks to see full details and Done \\/ Edit \\/ Delete buttons_",
         parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+# =============================================================================
+#  MENU BUTTON CALLBACKS
+# =============================================================================
+
+async def callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles all main_menu_keyboard button presses."""
+    query  = update.callback_query
+    action = query.data  # e.g. "menu_addtask", "menu_filter_pending"
+    await query.answer()
+
+    # ── Back to main menu
+    if action == "menu_main":
+        await query.message.reply_text(
+            "🏠 *Main Menu*\n\nChoose what you'd like to do:",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    # ── Task creation buttons — launch the conversation via a fake command message
+    if action == "menu_addtask":
+        await query.message.reply_text(
+            "📝 *New Task — Step 1/5*\n\nWhat's the task title?",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        context.user_data.pop("new_task", None)
+        context.user_data["_conv_start"] = "addtask"
+        return AT_TITLE
+
+    if action == "menu_addtask_ai":
+        await query.message.reply_text(
+            "🤖 *AI Task Creation*\n\n"
+            "Describe your task in plain English\\. For example:\n"
+            "• _'Submit the quarterly report by Friday, urgent'_\n"
+            "• _'Buy groceries tomorrow at 5 PM'_\n"
+            "• _'Study for math exam next Monday morning'_",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return AI_INPUT
+
+    # ── My Tasks (all)
+    if action == "menu_mytasks":
+        context.args = []
+        await _show_task_list(query.message, update.effective_user.id, status=None, category=None)
+        return
+
+    # ── Stats
+    if action == "menu_stats":
+        user_id  = update.effective_user.id
+        user     = await db.get_user(user_id)
+        stats    = await db.get_user_stats(user_id)
+        name     = user["full_name"] if user else "User"
+        wait_msg = await query.message.reply_text("📊 Generating your stats\\.\\.\\.", parse_mode=ParseMode.MARKDOWN_V2)
+        motivation = await ai.generate_daily_motivation(stats)
+        await wait_msg.edit_text(
+            f"{format_stats(stats, name)}\n\n💬 _{escape_md(motivation)}_",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=back_to_menu_keyboard(),
+        )
+        return
+
+    # ── Status filters
+    filter_map = {
+        "menu_filter_pending":  ("pending",     None),
+        "menu_filter_done":     ("done",        None),
+        "menu_filter_progress": ("in_progress", None),
+        "menu_filter_work":     (None, "work"),
+        "menu_filter_study":    (None, "study"),
+        "menu_filter_personal": (None, "personal"),
+        "menu_filter_health":   (None, "health"),
+        "menu_filter_finance":  (None, "finance"),
+    }
+    if action in filter_map:
+        status, category = filter_map[action]
+        await _show_task_list_with_menu(query.message, update.effective_user.id, status=status, category=category)
+        return
+
+    # ── Timezone setting
+    if action == "menu_settimezone":
+        await query.message.reply_text(
+            "⚙️ *Set your timezone*\n\n"
+            "Enter timezone like: `Asia/Tashkent`, `UTC`, `Europe/London`, `America/New_York`\n\n"
+            "Common examples:\n"
+            "`Asia/Tashkent` \\| `UTC` \\| `Europe/London` \\| `America/New_York` \\| `Australia/Sydney`",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=back_to_menu_keyboard(),
+        )
+        context.user_data["awaiting_timezone"] = True
+        return ConversationHandler.END
+
+
+async def _show_task_list(message, user_id: int, status=None, category=None):
+    """Shared helper — fetch tasks and send the inline list."""
+    tasks = await db.get_user_tasks(user_id, status=status, category=category)
+    if not tasks:
+        await message.reply_text(
+            "✅ No tasks found\\. You're all clear\\!",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=back_to_menu_keyboard(),
+        )
+        return
+
+    filter_label = ""
+    if status:   filter_label = f" — {status.replace('_',' ').capitalize()}"
+    elif category: filter_label = f" — {category.capitalize()}"
+
+    await message.reply_text(
+        f"📋 *Your Tasks{escape_md(filter_label)}* \\({len(tasks)} total\\)\n\n"
+        "_Tap any task to view full details and actions:_",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=task_list_keyboard(tasks),
+    )
+
+
+async def _show_task_list_with_menu(message, user_id: int, status=None, category=None):
+    """Helper — fetch tasks and send the inline list with back button."""
+    tasks = await db.get_user_tasks(user_id, status=status, category=category)
+    if not tasks:
+        await message.reply_text(
+            "✅ No tasks found\\. You're all clear\\!",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=back_to_menu_keyboard(),
+        )
+        return
+
+    filter_label = ""
+    if status:   filter_label = f" — {status.replace('_',' ').capitalize()}"
+    elif category: filter_label = f" — {category.capitalize()}"
+
+    # Build keyboard with task buttons
+    rows = []
+    for t in tasks:
+        p = PRIORITY_EMOJI.get(t["priority"], "⚪")
+        s = STATUS_EMOJI.get(t["status"], "❓")
+        label = f"{s}{p} #{t['id']}  {t['title'][:32]}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"task_view_{t['id']}")])
+    
+    # Add back button at the bottom
+    rows.append([InlineKeyboardButton("🏠 Back to Menu", callback_data="menu_main")])
+    
+    await message.reply_text(
+        f"📋 *Your Tasks{escape_md(filter_label)}* \\({len(tasks)} total\\)\n\n"
+        "_Tap any task to view full details and actions:_",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=InlineKeyboardMarkup(rows),
     )
 
 
@@ -310,6 +507,7 @@ async def addtask_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text != "⏭ Skip":
         deadline, err = parse_deadline(text)
         if err:
+            logger.warning(f"Invalid deadline input from user {update.effective_user.id}: '{text}'")
             await update.message.reply_text(f"⚠️ {err}", parse_mode=ParseMode.MARKDOWN_V2, reply_markup=skip_keyboard())
             return AT_DEADLINE
 
@@ -317,6 +515,7 @@ async def addtask_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     task_id = await db.create_task(user_id=user_id, **task_data)
     task    = await db.get_task(task_id, user_id)
+    logger.info(f"Task created: ID={task_id}, user={user_id}, title='{task_data['title']}'")
 
     await update.message.reply_text(
         f"✅ *Task created successfully\\!*\n\n{format_task_card(task)}",
@@ -325,7 +524,7 @@ async def addtask_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(
         "What would you like to do with this task?",
-        reply_markup=task_action_keyboard(task_id),
+        reply_markup=task_action_with_menu_keyboard(task_id),
     )
     context.user_data.pop("new_task", None)
     return ConversationHandler.END
@@ -379,7 +578,7 @@ async def addtask_ai_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(
         "What would you like to do with this task?",
-        reply_markup=task_action_keyboard(task_id),
+        reply_markup=task_action_with_menu_keyboard(task_id),
     )
     return ConversationHandler.END
 
@@ -402,25 +601,10 @@ async def cmd_mytasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = category = None
     if args:
         arg = args[0].lower()
-        if arg in status_map:   status   = status_map[arg]
+        if arg in status_map:     status   = status_map[arg]
         elif arg in category_map: category = category_map[arg]
 
-    tasks = await db.get_user_tasks(user_id, status=status, category=category)
-
-    if not tasks:
-        await update.message.reply_text("✅ No tasks found\\. You're all clear\\!", parse_mode=ParseMode.MARKDOWN_V2)
-        return
-
-    filter_label = ""
-    if status:   filter_label = f" — {status.replace('_',' ').capitalize()}"
-    elif category: filter_label = f" — {category.capitalize()}"
-
-    await update.message.reply_text(
-        f"📋 *Your Tasks{escape_md(filter_label)}* \\({len(tasks)} total\\)\n\n"
-        "_Tap any task to view full details and actions:_",
-        parse_mode=ParseMode.MARKDOWN_V2,
-        reply_markup=task_list_keyboard(tasks),
-    )
+    await _show_task_list(update.message, user_id, status=status, category=category)
 
 
 # =============================================================================
@@ -447,7 +631,7 @@ async def cmd_mytask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         format_task_card(task),
         parse_mode=ParseMode.MARKDOWN_V2,
-        reply_markup=task_action_keyboard(task_id),
+        reply_markup=task_action_with_menu_keyboard(task_id),
     )
 
 
@@ -470,7 +654,7 @@ async def callback_task_view(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.message.reply_text(
         format_task_card(task),
         parse_mode=ParseMode.MARKDOWN_V2,
-        reply_markup=task_action_keyboard(task_id),
+        reply_markup=task_action_with_menu_keyboard(task_id),
     )
 
 
@@ -491,21 +675,23 @@ async def callback_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await db.update_task(task_id, user_id, status="done")
     task = await db.get_task(task_id, user_id)
+    logger.info(f"Task marked as done: ID={task_id}, user={user_id}")
 
     await query.edit_message_text(
         f"🎉 *Marked as done\\!*\n\n{format_task_card(task)}",
         parse_mode=ParseMode.MARKDOWN_V2,
-        reply_markup=task_action_keyboard(task_id),
+        reply_markup=task_action_with_menu_keyboard(task_id),
     )
 
 
 async def callback_task_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """✏️ Edit button — launches edit conversation."""
+    """✏️ Edit button — launches edit conversation and stores origin message for in-place update."""
     query   = update.callback_query
     task_id = int(query.data.split("_")[-1])
     await query.answer()
 
-    context.user_data["edit_id"] = task_id
+    context.user_data["edit_id"]         = task_id
+    context.user_data["edit_origin_msg"] = query.message  # store to edit in-place later
     keyboard = ReplyKeyboardMarkup([[f] for f in EDIT_FIELDS], one_time_keyboard=True, resize_keyboard=True)
     await query.message.reply_text(
         f"✏️ Editing task `\\#{task_id}`\\. What field do you want to change?",
@@ -543,8 +729,10 @@ async def callback_task_delete_confirm(update: Update, context: ContextTypes.DEF
 
     deleted = await db.delete_task(task_id, user_id)
     if deleted:
+        logger.info(f"Task deleted: ID={task_id}, user={user_id}")
         await query.edit_message_text(f"🗑️ Task `\\#{task_id}` deleted\\.", parse_mode=ParseMode.MARKDOWN_V2)
     else:
+        logger.warning(f"Failed to delete task: ID={task_id}, user={user_id}")
         await query.edit_message_text("⚠️ Could not delete task\\.", parse_mode=ParseMode.MARKDOWN_V2)
 
 
@@ -674,18 +862,46 @@ async def edittask_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     updated = await db.update_task(task_id, user_id, **{field: value})
     task    = await db.get_task(task_id, user_id)
 
+    origin_msg = context.user_data.pop("edit_origin_msg", None)
+
     if updated and task:
+        new_text   = f"✅ *Task updated\\!*\n\n{format_task_card(task)}"
+        new_markup = task_action_with_menu_keyboard(task_id)
+
+        if origin_msg:
+            # Edit the original task card in-place — no new message
+            try:
+                await origin_msg.edit_text(
+                    new_text,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=new_markup,
+                )
+                await update.message.reply_text(
+                    "✅ Updated\\!",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=ReplyKeyboardRemove(),
+                )
+            except Exception:
+                # Fallback: send as new message if edit fails
+                await update.message.reply_text(
+                    new_text,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=ReplyKeyboardRemove(),
+                )
+                await update.message.reply_text("What would you like to do next?", reply_markup=new_markup)
+        else:
+            # Started via /edittask command — send a single combined message
+            await update.message.reply_text(
+                new_text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=new_markup,
+            )
+    else:
         await update.message.reply_text(
-            f"✅ *Task updated successfully\\!*\n\n{format_task_card(task)}",
+            "⚠️ Could not update task\\.",
             parse_mode=ParseMode.MARKDOWN_V2,
             reply_markup=ReplyKeyboardRemove(),
         )
-        await update.message.reply_text(
-            "What would you like to do next?",
-            reply_markup=task_action_keyboard(task_id),
-        )
-    else:
-        await update.message.reply_text("⚠️ Could not update task\\.", parse_mode=ParseMode.MARKDOWN_V2, reply_markup=ReplyKeyboardRemove())
 
     context.user_data.pop("edit_id", None)
     context.user_data.pop("edit_field", None)
@@ -770,6 +986,34 @@ async def cmd_settimezone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def handle_timezone_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle timezone input from the menu button flow."""
+    user_id = update.effective_user.id
+    if not context.user_data.get("awaiting_timezone"):
+        return
+
+    tz_name = update.message.text.strip()
+    context.user_data.pop("awaiting_timezone", None)
+
+    try:
+        pytz.timezone(tz_name)
+        await db.update_user_preferences(user_id, timezone=tz_name)
+        await update.message.reply_text(
+            f"✅ Timezone set to `{escape_md(tz_name)}`\\.",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=back_to_menu_keyboard(),
+        )
+        logger.info(f"Timezone updated: user={user_id}, tz={tz_name}")
+    except Exception:
+        await update.message.reply_text(
+            "⚠️ Invalid timezone\\. Please try again\\.\n"
+            "Examples: `Asia/Tashkent`, `UTC`, `Europe/London`, `America/New_York`",
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=back_to_menu_keyboard(),
+        )
+        logger.warning(f"Invalid timezone from user {user_id}: {tz_name}")
+
+
 # =============================================================================
 #  Fallback
 # =============================================================================
@@ -787,7 +1031,10 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def build_addtask_handler() -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CommandHandler("addtask", addtask_start)],
+        entry_points=[
+            CommandHandler("addtask", addtask_start),
+            CallbackQueryHandler(callback_menu, pattern=r"^menu_addtask$"),
+        ],
         states={
             AT_TITLE:       [MessageHandler(filters.TEXT & ~filters.COMMAND, addtask_title)],
             AT_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, addtask_description)],
@@ -802,7 +1049,10 @@ def build_addtask_handler() -> ConversationHandler:
 
 def build_addtask_ai_handler() -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CommandHandler("addtask_ai", addtask_ai_start)],
+        entry_points=[
+            CommandHandler("addtask_ai", addtask_ai_start),
+            CallbackQueryHandler(callback_menu, pattern=r"^menu_addtask_ai$"),
+        ],
         states={
             AI_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, addtask_ai_input)],
         },

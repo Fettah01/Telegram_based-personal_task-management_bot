@@ -1,9 +1,12 @@
 """
-app/services/ai_service.py — Google Gemini-powered features:
+app/services/ai_service.py — Google Gemini-powered features with request/token logging:
   • Natural language task parsing
   • Auto-categorization
   • Priority prediction
   • Daily motivation messages
+  • DETAILED REQUEST/RESPONSE LOGGING
+  • TOKEN USAGE TRACKING
+  • COST ESTIMATION
 
 Uses: google-genai (Google AI Studio / Gemini API)
 """
@@ -21,6 +24,79 @@ from google.genai.types import GenerateContentConfig
 from config.settings import GEMINI_API_KEY, GEMINI_MODEL
 
 logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────
+#  TOKEN & COST TRACKING
+# ─────────────────────────────────────────────
+
+class TokenTracker:
+    """Track token usage across all Gemini API calls."""
+    
+    def __init__(self):
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.request_count = 0
+        self.start_time = datetime.now()
+        
+    def add(self, input_tokens: int, output_tokens: int):
+        """Log a request's token usage."""
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+        self.request_count += 1
+    
+    def total_tokens(self) -> int:
+        """Get cumulative token count."""
+        return self.total_input_tokens + self.total_output_tokens
+    
+    def estimate_cost(self) -> Dict[str, float]:
+        """
+        Estimate API cost based on gemini-2.0-flash pricing.
+        (Update these rates based on your actual Gemini pricing tier)
+        """
+        # Pricing per 1M tokens (adjust to your plan)
+        input_cost_per_1m = 0.075   # $0.075 per 1M input tokens
+        output_cost_per_1m = 0.30   # $0.30 per 1M output tokens
+        
+        input_cost = (self.total_input_tokens / 1_000_000) * input_cost_per_1m
+        output_cost = (self.total_output_tokens / 1_000_000) * output_cost_per_1m
+        total_cost = input_cost + output_cost
+        
+        return {
+            "input_cost": round(input_cost, 6),
+            "output_cost": round(output_cost, 6),
+            "total_cost": round(total_cost, 6),
+        }
+    
+    def get_stats(self) -> str:
+        """Return formatted statistics."""
+        elapsed = datetime.now() - self.start_time
+        cost = self.estimate_cost()
+        
+        return (
+            f"\n{'='*60}\n"
+            f"📊 AI SERVICE STATISTICS\n"
+            f"{'='*60}\n"
+            f"Total Requests:        {self.request_count}\n"
+            f"Input Tokens:          {self.total_input_tokens:,}\n"
+            f"Output Tokens:         {self.total_output_tokens:,}\n"
+            f"Total Tokens:          {self.total_tokens():,}\n"
+            f"Estimated Cost:        ${cost['total_cost']:.6f}\n"
+            f"  ├─ Input:   ${cost['input_cost']:.6f}\n"
+            f"  └─ Output:  ${cost['output_cost']:.6f}\n"
+            f"Elapsed Time:          {elapsed}\n"
+            f"Avg Tokens/Request:    {self.total_tokens() // max(self.request_count, 1)}\n"
+            f"{'='*60}\n"
+        )
+
+
+# Global tracker instance
+_token_tracker = TokenTracker()
+
+
+def get_token_stats() -> str:
+    """Get current token statistics."""
+    return _token_tracker.get_stats()
+
 
 # ─────────────────────────────────────────────
 #  Lazy client — initialized on first use
@@ -43,15 +119,52 @@ def _get_client() -> genai.Client:
 
 
 # ─────────────────────────────────────────────
-#  Core Gemini call
+#  TOKEN COUNTING
 # ─────────────────────────────────────────────
 
-async def _gemini(prompt: str, temperature: float = 0.2) -> str:
+def count_tokens(text: str) -> int:
+    """
+    Estimate token count for a text string.
+    Rough estimate: ~1 token per 4 characters (for English)
+    More accurate: use Gemini's built-in token counter if available
+    """
+    # Conservative estimate: 1 token ≈ 4 characters
+    return max(1, len(text) // 4)
+
+
+# ─────────────────────────────────────────────
+#  CORE GEMINI CALL with LOGGING
+# ─────────────────────────────────────────────
+
+async def _gemini(
+    prompt: str, 
+    temperature: float = 0.2,
+    function_name: str = "unknown"
+) -> str:
     """
     Send a prompt to Gemini and return the text response.
-    Runs the synchronous SDK in a thread executor to stay async-safe.
-    Uses asyncio.get_running_loop() — correct for Python 3.10+.
+    Logs all requests, responses, and token usage.
     """
+    request_id = datetime.now().strftime("%H%M%S.%f")[:-3]  # HH:MM:SS.ms
+    
+    # Estimate input tokens
+    input_tokens = count_tokens(prompt)
+    
+    logger.info(
+        f"\n{'='*70}\n"
+        f"🔵 AI REQUEST #{request_id} — {function_name}\n"
+        f"{'='*70}\n"
+        f"Model:        {GEMINI_MODEL}\n"
+        f"Temperature:  {temperature}\n"
+        f"Prompt Size:  {len(prompt)} chars\n"
+        f"Est. Input Tokens: {input_tokens}\n"
+        f"{'-'*70}\n"
+        f"PROMPT:\n{'-'*70}\n"
+        f"{prompt[:500]}"
+        f"{'...[truncated]' if len(prompt) > 500 else ''}\n"
+        f"{'-'*70}\n"
+    )
+    
     def _call():
         response = _get_client().models.generate_content(
             model=GEMINI_MODEL,
@@ -63,8 +176,44 @@ async def _gemini(prompt: str, temperature: float = 0.2) -> str:
         )
         return response.text.strip()
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _call)
+    try:
+        loop = asyncio.get_running_loop()
+        response_text = await loop.run_in_executor(None, _call)
+        
+        # Estimate output tokens
+        output_tokens = count_tokens(response_text)
+        
+        # Track tokens
+        _token_tracker.add(input_tokens, output_tokens)
+        
+        logger.info(
+            f"{'='*70}\n"
+            f"🟢 AI RESPONSE #{request_id} — SUCCESS\n"
+            f"{'='*70}\n"
+            f"Response Size: {len(response_text)} chars\n"
+            f"Est. Output Tokens: {output_tokens}\n"
+            f"Total Tokens (this call): {input_tokens + output_tokens}\n"
+            f"Cumulative Tokens: {_token_tracker.total_tokens():,}\n"
+            f"{'-'*70}\n"
+            f"RESPONSE:\n{'-'*70}\n"
+            f"{response_text[:500]}"
+            f"{'...[truncated]' if len(response_text) > 500 else ''}\n"
+            f"{'-'*70}\n"
+        )
+        
+        return response_text
+        
+    except Exception as e:
+        logger.error(
+            f"\n{'='*70}\n"
+            f"🔴 AI REQUEST FAILED #{request_id}\n"
+            f"{'='*70}\n"
+            f"Function: {function_name}\n"
+            f"Error Type: {type(e).__name__}\n"
+            f"Error Message: {str(e)}\n"
+            f"{'-'*70}\n"
+        )
+        raise
 
 
 def _safe_json(text: str) -> Optional[Dict[str, Any]]:
@@ -126,7 +275,7 @@ async def parse_task_from_text(text: str, user_timezone: str = "UTC") -> Optiona
     prompt = PARSE_PROMPT_TEMPLATE.format(TODAY=today, INPUT=text)
 
     try:
-        raw  = await _gemini(prompt, temperature=0.1)
+        raw = await _gemini(prompt, temperature=0.1, function_name="parse_task_from_text")
         data = _safe_json(raw)
 
         if not data:
@@ -134,13 +283,13 @@ async def parse_task_from_text(text: str, user_timezone: str = "UTC") -> Optiona
             return None
 
         valid_categories = {"work", "study", "personal", "health", "finance", "general"}
-        valid_priorities  = {"high", "medium", "low"}
+        valid_priorities = {"high", "medium", "low"}
 
         return {
             "title":       str(data.get("title", text[:60])).strip(),
             "description": str(data.get("description", "")).strip(),
             "category":    data.get("category", "general") if data.get("category") in valid_categories else "general",
-            "priority":    data.get("priority", "medium")  if data.get("priority")  in valid_priorities  else "medium",
+            "priority":    data.get("priority", "medium") if data.get("priority") in valid_priorities else "medium",
             "deadline":    data.get("deadline"),
         }
     except Exception as e:
@@ -177,7 +326,7 @@ async def auto_categorize(title: str, description: str = "") -> str:
         DESCRIPTION=description or "(none)",
     )
     try:
-        result = (await _gemini(prompt)).lower().strip().rstrip(".")
+        result = (await _gemini(prompt, function_name="auto_categorize")).lower().strip().rstrip(".")
         valid = {"work", "study", "personal", "health", "finance", "general"}
         return result if result in valid else "general"
     except Exception as e:
@@ -225,7 +374,7 @@ async def predict_priority(title: str, description: str = "", deadline: Optional
         DAYS=days_str,
     )
     try:
-        result = (await _gemini(prompt)).lower().strip().rstrip(".")
+        result = (await _gemini(prompt, function_name="predict_priority")).lower().strip().rstrip(".")
         valid = {"high", "medium", "low"}
         return result if result in valid else "medium"
     except Exception as e:
@@ -261,7 +410,7 @@ async def generate_daily_motivation(stats: Dict[str, Any]) -> str:
         CATEGORY=stats.get("top_category", "general"),
     )
     try:
-        return await _gemini(prompt, temperature=0.7)
+        return await _gemini(prompt, temperature=0.7, function_name="generate_daily_motivation")
     except Exception as e:
         logger.error(f"[AI] generate_daily_motivation error: {e}")
         return "Keep pushing forward - every completed task is a step toward your goals. 💪"

@@ -6,6 +6,7 @@ import logging
 import os
 import traceback
 
+from config.settings import TELEGRAM_BOT_TOKEN, GEMINI_API_KEY
 from telegram import Update
 from telegram import BotCommand
 from telegram.ext import (
@@ -16,8 +17,9 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from config.settings import TELEGRAM_BOT_TOKEN, GEMINI_API_KEY
+
 import app.core.database as db
+from app.core.logger import setup_logging
 from app.bot.reminders import create_scheduler
 from app.bot.handlers import (
     # Simple commands
@@ -29,8 +31,11 @@ from app.bot.handlers import (
     cmd_deletetask,
     cmd_stats,
     cmd_settimezone,
+    handle_timezone_message,
     unknown_command,
-    # Inline button callbacks
+    # Menu callbacks
+    callback_menu,
+    # Task inline callbacks
     callback_task_view,
     callback_task_done,
     callback_task_delete,
@@ -45,11 +50,7 @@ from app.bot.handlers import (
 #  Logging
 # ─────────────────────────────────────────────
 
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)-8s | %(name)s — %(message)s",
-    level=logging.INFO,
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+setup_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -96,7 +97,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             elif update.effective_message:
                 await update.effective_message.reply_text(msg, parse_mode="MarkdownV2")
         except Exception:
-            pass  # Don't crash the error handler itself
+            pass
 
 
 async def post_init(application: Application) -> None:
@@ -105,7 +106,6 @@ async def post_init(application: Application) -> None:
     await application.bot.set_my_commands(BOT_COMMANDS)
     logger.info("Database initialised and bot commands registered.")
 
-    # Start scheduler here — event loop is guaranteed to be running at this point
     scheduler = create_scheduler(application.bot)
     scheduler.start()
     application.bot_data["scheduler"] = scheduler
@@ -118,7 +118,6 @@ async def post_shutdown(application: Application) -> None:
     if scheduler and scheduler.running:
         scheduler.shutdown(wait=False)
         logger.info("Reminder scheduler stopped.")
-
 
 def main():
     token = TELEGRAM_BOT_TOKEN
@@ -153,10 +152,14 @@ def main():
     app.add_handler(CommandHandler("settimezone",  cmd_settimezone))
 
     # ── Inline button callbacks
+    app.add_handler(CallbackQueryHandler(callback_menu,               pattern=r"^menu_"))
     app.add_handler(CallbackQueryHandler(callback_task_view,          pattern=r"^task_view_\d+$"))
     app.add_handler(CallbackQueryHandler(callback_task_done,          pattern=r"^task_done_\d+$"))
     app.add_handler(CallbackQueryHandler(callback_task_delete,        pattern=r"^task_del_\d+$"))
     app.add_handler(CallbackQueryHandler(callback_task_delete_confirm,pattern=r"^task_del_confirm_\d+$"))
+
+    # ── Timezone message handler (for menu button flow)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_timezone_message), group=0)
 
     # ── Fallback for unknown commands
     app.add_handler(MessageHandler(filters.COMMAND, unknown_command))

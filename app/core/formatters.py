@@ -5,8 +5,11 @@ All public functions that return strings intended for Telegram MarkdownV2
 must produce fully-escaped output. escape_md() is the single source of truth.
 """
 
+import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────
